@@ -11,9 +11,13 @@ const STATUS_TITLE: Record<string, string> = {
 export function RefInline({
   occurrence,
   highlight,
+  annotationCovered = false,
+  annotationActive = false,
 }: {
   occurrence: RefOccurrence;
   highlight?: boolean;
+  annotationCovered?: boolean;
+  annotationActive?: boolean;
 }) {
   const { store, highlighter } = useApp();
   const hl = useHighlighter(highlighter);
@@ -58,7 +62,7 @@ export function RefInline({
   return (
     <button
       type="button"
-      className={`ref-chip ${statusClass} ${active ? 'ref-active' : ''} ${highlight ? 'ref-in-sentence' : ''}`}
+      className={`ref-chip ${statusClass} ${active ? 'ref-active' : ''} ${highlight ? 'ref-in-sentence' : ''} ${annotationCovered ? 'ref-has-ann' : ''} ${annotationActive ? 'ref-ann-active' : ''}`}
       title={title}
       onMouseEnter={() => highlighter.hoverRef(occurrence.key, targetId)}
       onMouseLeave={() => highlighter.hoverRef(null, null)}

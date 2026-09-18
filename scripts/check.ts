@@ -6,6 +6,12 @@ import { parseOrdinal, formatChinese } from '../src/lib/numeral';
 import { diffDocuments, diffText, MAX_LCS_CHARS } from '../src/lib/diff';
 import { createSnapshot, sanitizeSnapshots } from '../src/lib/snapshot';
 import { cloneTree, renumberAll } from '../src/lib/tree';
+import {
+  createAnnotation,
+  relocateAnnotations,
+  sanitizeAnnotations,
+  findAll,
+} from '../src/lib/annotations';
 import { assert } from 'node:console';
 
 let pass = 0;
@@ -308,6 +314,238 @@ check('同序号歧义', ambA.issues.some((i) => i.type === 'ambiguous'), JSON.s
   const long = '字'.repeat(MAX_LCS_CHARS + 10);
   const segsLong = diffText(long, long + '尾');
   check('超长文本退化为整段差异', segsLong.some((s) => s.type === 'add'));
+}
+
+// ---- 审阅批注：创建锚点 ----
+{
+  const d = parseDocument(`批注法
+
+第一条【目的】
+为了规范批注活动，制定本办法。
+
+第二条【程序】
+起草、审查与公布，均适用本办法。`).doc;
+  renumberAll(d.root);
+  const firstTextNode = d.root[0].children[0];
+  const q = '制定本办法';
+  const pos = firstTextNode.text.indexOf(q);
+  const ann = createAnnotation(firstTextNode.id, pos, pos + q.length, firstTextNode.text, '措辞待斟酌');
+  check('批注创建：状态锚定', ann.status === 'anchored');
+  check('批注创建：记录引用片段', ann.quote === q);
+  check('批注创建：前文锚点非空', ann.prefix.length > 0);
+  check('批注创建：后文锚点为句末标点', ann.suffix === '。');
+  check('片段查找：唯一', findAll(firstTextNode.text, q).length === 1);
+  check('片段查找：多处', findAll('aaa', 'a').length === 3);
+}
+
+// ---- 审阅批注：正文未变时位置不动 ----
+{
+  const d = parseDocument(`批注法
+
+第一条
+为了规范批注活动，制定本办法。`).doc;
+  renumberAll(d.root);
+  const n = d.root[0].children[0];
+  const q = '规范批注';
+  const pos = n.text.indexOf(q);
+  const ann = createAnnotation(n.id, pos, pos + q.length, n.text, 'x');
+  const r = relocateAnnotations([ann], d);
+  check('正文未变：批注保持锚定', r.annotations[0].status === 'anchored' && r.annotations[0].start === pos);
+  check('正文未变：无新增待复核', r.reviewIds.length === 0);
+}
+
+// ---- 审阅批注：片段在节点内偏移移动（前文插入）自动跟随 ----
+{
+  const d0 = parseDocument(`批注法
+
+第一条
+为了规范批注活动，制定本办法。`).doc;
+  renumberAll(d0.root);
+  const n = d0.root[0].children[0];
+  const q = '制定本办法';
+  const ann = createAnnotation(n.id, n.text.indexOf(q), n.text.indexOf(q) + q.length, n.text, 'x');
+  const d = parseDocument(`批注法
+
+第一条
+【新增前缀】为了规范批注活动，制定本办法。`).doc;
+  renumberAll(d.root);
+  d.root[0].id = d0.root[0].id;
+  d.root[0].children[0].id = n.id;
+  const r = relocateAnnotations([ann], d);
+  const nn = d.root[0].children[0];
+  check('前文插入：批注自动跟随新偏移', r.annotations[0].status === 'anchored' && r.annotations[0].start === nn.text.indexOf(q), String(r.annotations[0].start));
+}
+
+// ---- 审阅批注：多处匹配标为待复核并保留候选 ----
+{
+  const d = parseDocument(`批注法
+
+第一条
+同意、同意、同意。`).doc;
+  renumberAll(d.root);
+  const n = d.root[0].children[0];
+  const ann = createAnnotation(n.id, 0, 2, n.text, 'x');
+  const r = relocateAnnotations([ann], d);
+  check('多处匹配：待复核', r.annotations[0].status === 'review');
+  check('多处匹配：原因 multi-in-node', r.annotations[0].reason === 'multi-in-node');
+  check('多处匹配：保留 3 个候选', (r.annotations[0].candidates?.length ?? 0) === 3, String(r.annotations[0].candidates?.length));
+}
+
+// ---- 审阅批注：节点删除后全文唯一匹配自动重锚 ----
+{
+  const d0 = parseDocument(`批注法
+
+第一条
+甲条款内容。
+
+第二条
+乙条款内容。`).doc;
+  renumberAll(d0.root);
+  const q = '乙条款内容';
+  const ann = createAnnotation(d0.root[1].children[0].id, 0, q.length, q, 'x');
+  // 删除第二条，把其正文并入第三条
+  const d = parseDocument(`批注法
+
+第一条
+甲条款内容。
+
+第三条
+乙条款内容。`).doc;
+  renumberAll(d.root);
+  d.root[0].id = d0.root[0].id;
+  d.root[0].children[0].id = d0.root[0].children[0].id;
+  const r = relocateAnnotations([ann], d);
+  check('节点删除+全文唯一：自动锚到新节点', r.annotations[0].status === 'anchored' && r.annotations[0].nodeId === d.root[1].children[0].id, r.annotations[0].nodeId);
+}
+
+// ---- 审阅批注：节点删除且片段消失 → node-missing 待复核 ----
+{
+  const d0 = parseDocument(`批注法
+
+第一条
+甲条款内容。
+
+第二条
+乙条款内容。`).doc;
+  renumberAll(d0.root);
+  const q = '乙条款内容';
+  const ann = createAnnotation(d0.root[1].children[0].id, 0, q.length, q, 'x');
+  const d = parseDocument(`批注法
+
+第一条
+甲条款内容。
+
+第二条
+完全不同的新文字。`).doc;
+  renumberAll(d.root);
+  d.root[0].id = d0.root[0].id;
+  d.root[0].children[0].id = d0.root[0].children[0].id;
+  d.root[1].id = d0.root[1].id;
+  d.root[1].children[0].id = d0.root[1].children[0].id; // 节点 id 保留但文字已改
+  const r1 = relocateAnnotations([ann], d);
+  check('节点在但片段缺失：missing', r1.annotations[0].status === 'review' && r1.annotations[0].reason === 'missing', r1.annotations[0].reason ?? '');
+
+  const d2 = parseDocument(`批注法
+
+第一条
+甲条款内容。`).doc;
+  renumberAll(d2.root);
+  d2.root[0].id = d0.root[0].id;
+  d2.root[0].children[0].id = d0.root[0].children[0].id;
+  const r2 = relocateAnnotations([ann], d2);
+  check('节点删除且找不到：node-missing', r2.annotations[0].status === 'review' && r2.annotations[0].reason === 'node-missing', r2.annotations[0].reason ?? '');
+}
+
+// ---- 审阅批注：归一化（空白/标点差异）匹配 ----
+{
+  const d0 = parseDocument(`批注法
+
+第一条
+引用第五条第二款的规定。`).doc;
+  renumberAll(d0.root);
+  const n0 = d0.root[0].children[0];
+  const q = '第五条第二款';
+  const ann = createAnnotation(n0.id, n0.text.indexOf(q), n0.text.indexOf(q) + q.length, n0.text, 'x');
+  // 正文在引用片段中间插入了顿号；归一化（剥离标点）后应唯一重锚
+  const d = parseDocument(`批注法
+
+第一条
+引用第五条、第二款的规定。`).doc;
+  renumberAll(d.root);
+  d.root[0].id = d0.root[0].id;
+  d.root[0].children[0].id = n0.id;
+  const r = relocateAnnotations([ann], d);
+  check('归一化匹配：标点差异自动重锚', r.annotations[0].status === 'anchored', r.annotations[0].reason ?? 'anchored');
+  const relit = d.root[0].children[0].text.slice(r.annotations[0].start, r.annotations[0].end);
+  check('归一化匹配：定位覆盖当前文字', relit === '第五条、第二款', relit);
+}
+
+// ---- 审阅批注：全文多处匹配 → multi-match + 候选按前后文排序 ----
+{
+  const d0 = parseDocument(`批注法
+
+第一条
+前置文字目标片段后缀文字。`).doc;
+  renumberAll(d0.root);
+  const n0 = d0.root[0].children[0];
+  const q = '目标片段';
+  const ann = createAnnotation(n0.id, n0.text.indexOf(q), n0.text.indexOf(q) + q.length, n0.text, 'x');
+  const d = parseDocument(`批注法
+
+第一条
+无关内容。
+
+第二条
+另外一处目标片段在这里。
+
+第三条
+前置文字目标片段后缀文字。`).doc;
+  renumberAll(d.root);
+  d.root[2].children[0].text = '前置文字目标片段后缀文字。'; // 与原前后文一致
+  const r = relocateAnnotations([ann], d);
+  check('全文多处：multi-match 待复核', r.annotations[0].status === 'review' && r.annotations[0].reason === 'multi-match', r.annotations[0].reason ?? '');
+  const cands = r.annotations[0].candidates ?? [];
+  check('全文多处：保留候选', cands.length === 2, String(cands.length));
+  check('候选排序：前后文最相似者居首', cands[0]?.nodeId === d.root[2].children[0].id, cands[0]?.nodeId ?? '');
+}
+
+// ---- 审阅批注：外部数据规整 ----
+{
+  check('空/非法批注列表 → 空', sanitizeAnnotations(undefined).length === 0);
+  check('非法项过滤', sanitizeAnnotations([null, 42, { nodeId: 'x' }, { nodeId: 'x', quote: '', content: '' }]).length === 0);
+  const cleaned = sanitizeAnnotations([
+    { id: 'a1', nodeId: 'n1', start: 0, end: 3, quote: 'abc', content: 'ok', status: 'review' },
+    { nodeId: 'n2', quote: 'd', content: 'ok' }, // 缺 id 自动补
+  ]);
+  check('合法批注保留', cleaned.length === 2 && cleaned[0].status === 'review');
+  check('缺省 id / 时间戳自动补全', Boolean(cleaned[1].id) && typeof cleaned[1].createdAt === 'number');
+  check('非法状态回退 anchored', sanitizeAnnotations([{ nodeId: 'n', quote: 'a', content: 'c', status: 'weird' }])[0].status === 'anchored');
+}
+
+// ---- 审阅批注：快照携带批注并只读 ----
+{
+  const d = parseDocument(`快照批注法
+
+第一条
+快照正文。`).doc;
+  renumberAll(d.root);
+  const anns = sanitizeAnnotations([
+    { id: 'an1', nodeId: d.root[0].children[0].id, start: 0, end: 2, quote: '快照', content: '留痕' },
+  ]);
+  const snap = createSnapshot(d, {}, '带批注稿', anns);
+  check('快照携带批注', Array.isArray(snap.annotations) && snap.annotations!.length === 1);
+  let froze = false;
+  try {
+    'use strict';
+    (snap.annotations as unknown[]).push?.({} as never);
+  } catch {
+    froze = true;
+  }
+  check('快照批注只读冻结', froze);
+  const loaded = sanitizeSnapshots([
+    { id: 's', name: 's', createdAt: 1, doc: d, confirmed: {}, annotations: [{ nodeId: 'x', quote: 'q', content: 'c' }] },
+  ]);
+  check('快照导入时规整批注', (loaded[0].annotations?.length ?? 0) === 1);
 }
 
 console.log(`\n通过 ${pass} 项，失败 ${fail} 项`);

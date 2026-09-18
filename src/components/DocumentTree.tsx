@@ -7,15 +7,25 @@ import { formatOrdinal } from '../lib/numeral';
 import { countNodes } from '../lib/parser';
 
 export function DocumentTree() {
-  const { store } = useApp();
+  const { store, highlighter } = useApp();
   const [, force] = useState(0);
   useEffect(() => store.subscribe(() => force((n) => n + 1)), [store]);
+  const hl = useHighlighter(highlighter);
   const { doc, analysis } = store.getSnapshot();
   const counts = countNodes(doc);
   const [collapsed, setCollapsed] = useState<Record<string, boolean>>({});
 
   const toggle = (id: string) =>
     setCollapsed((c) => ({ ...c, [id]: !c[id] }));
+
+  // 问题 / 批注跳转到折叠条内的款、项时，自动展开所属条
+  useEffect(() => {
+    if (hl.focusNonce === 0 || !hl.activeNodeId) return;
+    const articleId = analysis.placement[hl.activeNodeId]?.article.id;
+    if (articleId && collapsed[articleId]) {
+      setCollapsed((c) => ({ ...c, [articleId]: false }));
+    }
+  }, [hl.focusNonce, hl.activeNodeId, analysis, collapsed]);
 
   return (
     <div className="doc-tree">

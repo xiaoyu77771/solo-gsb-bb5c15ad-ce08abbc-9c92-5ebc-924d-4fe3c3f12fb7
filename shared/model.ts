@@ -135,7 +135,52 @@ export interface ArticleEdge {
   refKey: string;
 }
 
-/** 命名版本快照：保存时刻的文档与歧义确认（只读，不随后续编辑变化） */
+/** 批注锚定状态：anchored 已唯一定位；review 片段缺失或多处匹配，需人工复核 */
+export type AnnotationStatus = 'anchored' | 'review';
+
+/** 重定位时保留的候选位置（按前后文相似度降序） */
+export interface AnnotationCandidate {
+  nodeId: string;
+  start: number;
+  end: number;
+  /** 与批注前后文锚点的相似度评分（公共前缀+后缀长度） */
+  score: number;
+}
+
+/** 待复核原因 */
+export type AnnotationReviewReason =
+  | 'multi-in-node' // 片段在原节点出现多处
+  | 'multi-match' // 片段在全文多处匹配
+  | 'missing' // 节点仍在但片段缺失
+  | 'node-missing'; // 原节点已删除且未找到片段
+
+/**
+ * 审阅批注：锚定到稳定节点 ID 上的正文片段。
+ * start/end 为当前定位（review 时取评分最高的候选，仅供参考）；
+ * quote 为创建时的原文片段，prefix/suffix 为前后文锚点。
+ */
+export interface Annotation {
+  id: string;
+  nodeId: string;
+  start: number;
+  end: number;
+  /** 引用片段原文（创建后不变） */
+  quote: string;
+  /** 片段前文锚点 */
+  prefix: string;
+  /** 片段后文锚点 */
+  suffix: string;
+  /** 批注正文 */
+  content: string;
+  status: AnnotationStatus;
+  reason?: AnnotationReviewReason;
+  /** review 时保留的候选位置 */
+  candidates?: AnnotationCandidate[];
+  createdAt: number;
+  updatedAt: number;
+}
+
+/** 命名版本快照：保存时刻的文档、歧义确认与批注（只读，不随后续编辑变化） */
 export interface DocSnapshot {
   id: string;
   name: string;
@@ -143,6 +188,8 @@ export interface DocSnapshot {
   doc: ClauseDocument;
   /** 保存时刻的歧义确认记录 */
   confirmed: Record<string, string>;
+  /** 保存时刻的审阅批注；旧数据缺少该字段时按空列表加载 */
+  annotations?: Annotation[];
 }
 
 /** 持久化状态（同时用于本地文件与浏览器缓存） */
@@ -152,6 +199,8 @@ export interface PersistedState {
   confirmed: Record<string, string>;
   /** 命名版本快照；旧数据缺少该字段时按空列表加载 */
   snapshots?: DocSnapshot[];
+  /** 审阅批注；旧数据缺少该字段时按空列表加载 */
+  annotations?: Annotation[];
 }
 
 export interface ExportBundle {
@@ -161,5 +210,7 @@ export interface ExportBundle {
   confirmed: Record<string, string>;
   /** 命名版本快照随 JSON 一并导出，导入时恢复 */
   snapshots?: DocSnapshot[];
+  /** 审阅批注随 JSON 一并导出，导入时恢复并尝试重定位 */
+  annotations?: Annotation[];
   exportedAt: string;
 }

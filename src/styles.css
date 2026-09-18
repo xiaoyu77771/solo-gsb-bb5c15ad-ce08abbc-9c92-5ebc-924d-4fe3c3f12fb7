@@ -477,6 +477,141 @@ button.small { padding: 1px 6px; font-size: 11px; }
 }
 .file-btn:hover { border-color: var(--accent); color: var(--accent); }
 
+/* ---------- 审阅批注 ---------- */
+.ann-mark {
+  border-radius: 3px;
+  padding: 1px 0;
+  cursor: pointer;
+  border-bottom: 2px solid rgba(125, 211, 252, 0.75);
+  background: rgba(125, 211, 252, 0.16);
+  color: inherit;
+}
+.ann-mark:hover { background: rgba(125, 211, 252, 0.32); }
+.ann-mark.ann-review {
+  border-bottom-color: var(--warn);
+  background: rgba(251, 191, 36, 0.18);
+}
+.ann-mark.ann-active,
+.ref-chip.ref-ann-active {
+  box-shadow: 0 0 0 2px var(--accent);
+  background: rgba(56, 189, 248, 0.38);
+}
+.ref-chip.ref-has-ann {
+  outline: 1px dashed rgba(125, 211, 252, 0.8);
+  outline-offset: 1px;
+}
+
+.ann-pop {
+  width: 240px;
+  background: var(--panel-2);
+  border: 1px solid var(--accent);
+  border-radius: 8px;
+  padding: 9px 10px;
+  box-shadow: 0 8px 28px rgba(0, 0, 0, 0.5);
+}
+.ann-pop::after {
+  content: '';
+  position: absolute;
+  left: 50%;
+  bottom: -6px;
+  transform: translateX(-50%);
+  border: 6px solid transparent;
+  border-top-color: var(--accent);
+  border-bottom-width: 0;
+}
+.ann-pop-quote {
+  font-size: 11.5px;
+  color: #7dd3fc;
+  margin-bottom: 6px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.ann-pop-input {
+  width: 100%;
+  background: var(--bg);
+  color: var(--text);
+  border: 1px solid var(--border);
+  border-radius: 5px;
+  padding: 6px 8px;
+  font: inherit;
+  font-size: 12.5px;
+  line-height: 1.6;
+  resize: none;
+}
+.ann-pop-input:focus { border-color: var(--accent); outline: none; }
+.ann-pop-actions { display: flex; justify-content: flex-end; gap: 6px; margin-top: 6px; }
+
+.ann-panel { flex: 1; display: flex; flex-direction: column; min-height: 0; }
+.ann-filters .ann-review-btn { color: var(--warn); }
+.ann-filters .ann-review-btn.active { border-color: var(--warn); color: var(--warn); }
+.ann-list { flex: 1; overflow: auto; padding: 0 10px 10px; }
+
+.ann-row { border-left-width: 3px; }
+.ann-row.ann-anchored { border-left-color: #7dd3fc; }
+.ann-row.ann-review { border-left-color: var(--warn); background: rgba(251, 191, 36, 0.07); }
+.ann-row.ann-row-active {
+  box-shadow: 0 0 0 2px rgba(56, 189, 248, 0.55);
+}
+.ann-status-tag { font-size: 11.5px; font-weight: 700; color: #7dd3fc; }
+.ann-status-tag.is-review { color: var(--warn); }
+.ann-quote-btn { font-style: normal; }
+.ann-review-line {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+  color: var(--warn);
+  font-size: 11.5px;
+  margin: 3px 0;
+}
+.ann-content {
+  font-size: 12.5px;
+  line-height: 1.7;
+  color: var(--text);
+  white-space: pre-wrap;
+  cursor: pointer;
+  margin-top: 2px;
+}
+.ann-row-actions { display: flex; gap: 10px; margin-top: 5px; }
+.ann-edit-box { margin-top: 5px; }
+.ann-edit-input {
+  width: 100%;
+  background: var(--bg);
+  color: var(--text);
+  border: 1px solid var(--accent);
+  border-radius: 5px;
+  padding: 6px 8px;
+  font: inherit;
+  font-size: 12.5px;
+  line-height: 1.6;
+  resize: vertical;
+}
+.ann-edit-actions { display: flex; justify-content: flex-end; gap: 6px; margin-top: 5px; }
+
+.ann-cand-box {
+  margin-top: 6px;
+  padding: 7px 9px;
+  background: rgba(251, 191, 36, 0.07);
+  border: 1px dashed rgba(251, 191, 36, 0.5);
+  border-radius: 6px;
+  font-size: 12px;
+}
+.ann-cand-item {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 3px 0;
+}
+.ann-cand-ctx {
+  flex: 1;
+  color: var(--text-dim);
+  font-size: 11.5px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
 /* ---------- 通知条 ---------- */
 .toast {
   position: fixed;

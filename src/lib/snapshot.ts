@@ -1,5 +1,6 @@
-import type { ClauseDocument, DocSnapshot } from '../../shared/model';
+import type { Annotation, ClauseDocument, DocSnapshot } from '../../shared/model';
 import { renumberAll } from './tree';
+import { sanitizeAnnotations } from './annotations';
 import { uid } from './uid';
 
 /** 深拷贝可序列化内容（快照与正文完全脱离引用关系） */
@@ -12,6 +13,7 @@ export function createSnapshot(
   doc: ClauseDocument,
   confirmed: Record<string, string>,
   name: string,
+  annotations: Annotation[] = [],
   now = Date.now(),
 ): DocSnapshot {
   const snapshot: DocSnapshot = {
@@ -20,6 +22,7 @@ export function createSnapshot(
     createdAt: now,
     doc: deepClone(doc),
     confirmed: deepClone(confirmed),
+    annotations: deepClone(annotations),
   };
   // 快照只读：冻结后任何误写都会立即暴露（开发期），且不影响正文
   return freezeSnapshot(snapshot);
@@ -38,6 +41,13 @@ export function freezeSnapshot(snapshot: DocSnapshot): DocSnapshot {
   Object.freeze(snapshot.confirmed);
   Object.freeze(snapshot.doc);
   walk(snapshot.doc.root);
+  if (Array.isArray(snapshot.annotations)) {
+    Object.freeze(snapshot.annotations);
+    snapshot.annotations.forEach((an) => {
+      Object.freeze(an);
+      if (Array.isArray(an.candidates)) Object.freeze(an.candidates);
+    });
+  }
   return snapshot;
 }
 
@@ -72,6 +82,7 @@ export function sanitizeSnapshots(value: unknown): DocSnapshot[] {
         createdAt: typeof s.createdAt === 'number' ? s.createdAt : 0,
         doc,
         confirmed,
+        annotations: sanitizeAnnotations(s.annotations),
       }),
     );
   }
