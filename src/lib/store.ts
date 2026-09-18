@@ -1,5 +1,7 @@
 import { useSyncExternalStore } from 'react';
 import type {
+  Annotation,
+  AnnotationCandidate,
   ClauseDocument,
   ClauseNode,
   DocSnapshot,
@@ -23,17 +25,25 @@ import {
 import { applyStructuralChange } from './rewriter';
 import { localStore, serverStore } from './storage';
 import { createSnapshot, sanitizeSnapshots } from './snapshot';
+import {
+  createAnnotation,
+  relocateAnnotations,
+  resolveAnnotation,
+  sanitizeAnnotations,
+} from './annotations';
 import { uid } from './uid';
 
-/** 撤销/重做历史只承载正文与确认记录；快照独立于历史，不参与撤销 */
+/** 撤销/重做历史承载正文、确认记录与批注；快照独立于历史，不参与撤销 */
 interface DocState {
   doc: ClauseDocument;
   confirmed: Record<string, string>;
+  annotations: Annotation[];
 }
 
 interface Snapshot {
   doc: ClauseDocument;
   confirmed: Record<string, string>;
+  annotations: Annotation[];
   snapshots: DocSnapshot[];
   analysis: Analysis;
   canUndo: boolean;
@@ -56,7 +66,12 @@ export class AppStore {
 
   constructor(initial: PersistedState) {
     this.snapshots = sanitizeSnapshots(initial.snapshots);
-    this.docState = { doc: initial.doc, confirmed: initial.confirmed };
+    // 加载后按当前文档立即重定位一次（旧数据 / 手工编辑过的 JSON 也能正确标注状态）
+    const annotations = relocateAnnotations(
+      sanitizeAnnotations(initial.annotations),
+      initial.doc,
+    );
+    this.docState = { doc: initial.doc, confirmed: initial.confirmed, annotations };
     this.analysis = analyze(initial.doc, { confirmed: initial.confirmed });
   }
 
@@ -72,18 +87,19 @@ export class AppStore {
   getSnapshot = (): Snapshot => ({
     doc: this.docState.doc,
     confirmed: this.docState.confirmed,
+    annotations: this.docState.annotations,
     snapshots: this.snapshots,
     analysis: this.analysis,
     canUndo: this.past.length > 0,
     canRedo: this.future.length > 0,
   });
 
-  /** 当前完整持久化状态（正文 + 确认 + 快照） */
+  /** 当前完整持久化状态（正文 + 确认 + 批注 + 快照） */
   private currentPersisted(): PersistedState {
     return { ...this.docState, snapshots: this.snapshots };
   }
 
-  /** 提交新状态：重新分析、裁剪过期确认、压入历史、持久化 */
+  /** 提交新状态：重新分析、裁剪过期确认、批注自动重定位、压入历史、持久化 */
   private commit(next: DocState, options: { coalesce?: boolean } = {}): void {
     const analysis = analyze(next.doc, { confirmed: next.confirmed });
     // 裁剪：确认记录必须仍对应一个“歧义已消失/仍歧义”的 occurrence，且目标存在
@@ -96,7 +112,9 @@ export class AppStore {
     for (const [sig, target] of Object.entries(next.confirmed)) {
       if (valid.has(sig) && analysis.nodes[target]) confirmed[sig] = target;
     }
-    next = { confirmed, doc: touch(next.doc) };
+    // 正文或结构调整后自动尝试重定位批注（片段缺失/多处匹配标为待复核并保留候选）
+    const annotations = relocateAnnotations(next.annotations, next.doc);
+    next = { confirmed, annotations, doc: touch(next.doc) };
 
     if (options.coalesce) {
       if (this.coalesceBaseline) {
@@ -164,7 +182,10 @@ export class AppStore {
     const now = Date.now();
     const coalesce = now < this.editCoalesceUntil;
     this.editCoalesceUntil = now + 800;
-    this.commit({ ...this.docState, doc: { ...this.docState.doc, root } }, { coalesce });
+    this.commit(
+      { ...this.docState, doc: { ...this.docState.doc, root } },
+      { coalesce },
+    );
   }
 
   updateArticleMeta(articleId: string, patch: { title?: string; suffix?: string }): void {
@@ -280,9 +301,9 @@ export class AppStore {
 
   importPastedText(raw: string): void {
     const { doc } = parseDocument(raw, this.docState.doc.title);
-    // 粘贴替换正文是全新文档，旧快照不再有对齐意义
+    // 粘贴替换正文是全新文档，旧快照与批注不再有对齐意义
     this.snapshots = [];
-    this.commit({ doc, confirmed: {} });
+    this.commit({ doc, confirmed: {}, annotations: [] });
   }
 
   importJson(bundle: ExportBundle | PersistedState): void {
@@ -296,8 +317,10 @@ export class AppStore {
     const confirmed = bundle.confirmed ?? {};
     // 快照随 JSON 导入；旧文件缺少 snapshots 时按空列表加载
     this.snapshots = sanitizeSnapshots(bundle.snapshots);
+    // 批注随 JSON 导入，并按导入文档重新定位；旧文件缺少 annotations 时按空列表加载
+    const annotations = relocateAnnotations(sanitizeAnnotations(bundle.annotations), doc);
     renumberAll(doc.root);
-    this.commit({ doc: touch(doc), confirmed });
+    this.commit({ doc: touch(doc), confirmed, annotations });
   }
 
   exportJson(): ExportBundle {
@@ -306,6 +329,7 @@ export class AppStore {
       version: 1,
       document: this.docState.doc,
       confirmed: this.docState.confirmed,
+      annotations: this.docState.annotations,
       snapshots: this.snapshots,
       exportedAt: new Date().toISOString(),
     };
@@ -313,7 +337,7 @@ export class AppStore {
 
   replaceWithSample(doc: ClauseDocument): void {
     this.snapshots = [];
-    this.commit({ doc, confirmed: {} });
+    this.commit({ doc, confirmed: {}, annotations: [] });
   }
 
   // ---------- 版本快照（只读；创建/删除不进入正文撤销历史） ----------
@@ -325,6 +349,7 @@ export class AppStore {
       this.docState.doc,
       this.docState.confirmed,
       trimmed || defaultSnapshotName(this.snapshots.length),
+      this.docState.annotations,
     );
     this.snapshots = [...this.snapshots, snapshot];
     this.scheduleSave();
@@ -353,6 +378,50 @@ export class AppStore {
     const confirmed = { ...this.docState.confirmed };
     delete confirmed[signature];
     this.commit({ ...this.docState, confirmed });
+  }
+
+  // ---------- 审阅批注 ----------
+
+  /** 在指定节点正文区间上创建批注，返回新批注 id */
+  addAnnotation(nodeId: string, start: number, end: number, note: string): string | null {
+    const root = this.docState.doc.root;
+    const found = findNode(root, nodeId);
+    if (!found) return null;
+    const s = Math.max(0, Math.min(start, found.node.text.length));
+    const e = Math.max(s, Math.min(end, found.node.text.length));
+    if (s === e) return null;
+    const ann = createAnnotation(nodeId, found.node.text, s, e, note.trim());
+    this.commit({ ...this.docState, annotations: [...this.docState.annotations, ann] });
+    return ann.id;
+  }
+
+  /** 编辑批注正文 */
+  updateAnnotationNote(annotationId: string, note: string): void {
+    const now = Date.now();
+    const coalesce = now < this.editCoalesceUntil;
+    this.editCoalesceUntil = now + 800;
+    const annotations = this.docState.annotations.map((a) =>
+      a.id === annotationId ? { ...a, note: note.trim(), updatedAt: now } : a,
+    );
+    this.commit({ ...this.docState, annotations }, { coalesce });
+  }
+
+  deleteAnnotation(annotationId: string): void {
+    this.commit({
+      ...this.docState,
+      annotations: this.docState.annotations.filter((a) => a.id !== annotationId),
+    });
+  }
+
+  /** 采纳待复核候选：锚定到候选位置并重写锚点 */
+  resolveAnnotation(annotationId: string, candidate: AnnotationCandidate): void {
+    const annotations = resolveAnnotation(
+      this.docState.annotations,
+      annotationId,
+      candidate,
+      this.docState.doc,
+    );
+    this.commit({ ...this.docState, annotations });
   }
 
   // ---------- 派生查询 ----------

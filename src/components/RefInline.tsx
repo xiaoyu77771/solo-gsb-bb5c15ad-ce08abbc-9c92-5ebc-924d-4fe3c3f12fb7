@@ -11,9 +11,11 @@ const STATUS_TITLE: Record<string, string> = {
 export function RefInline({
   occurrence,
   highlight,
+  children,
 }: {
   occurrence: RefOccurrence;
   highlight?: boolean;
+  children?: React.ReactNode;
 }) {
   const { store, highlighter } = useApp();
   const hl = useHighlighter(highlighter);
@@ -71,7 +73,7 @@ export function RefInline({
         }
       }}
     >
-      {span.raw}
+      {children ?? span.raw}
     </button>
   );
 }

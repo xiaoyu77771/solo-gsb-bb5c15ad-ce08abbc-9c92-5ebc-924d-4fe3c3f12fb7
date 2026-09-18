@@ -135,7 +135,7 @@ export interface ArticleEdge {
   refKey: string;
 }
 
-/** 命名版本快照：保存时刻的文档与歧义确认（只读，不随后续编辑变化） */
+/** 命名版本快照：保存时刻的文档与歧义确认、批注（只读，不随后续编辑变化） */
 export interface DocSnapshot {
   id: string;
   name: string;
@@ -143,6 +143,62 @@ export interface DocSnapshot {
   doc: ClauseDocument;
   /** 保存时刻的歧义确认记录 */
   confirmed: Record<string, string>;
+  /** 保存时刻的审阅批注（重定位记录随快照一并冻结）；旧数据缺少该字段时按空列表加载 */
+  annotations?: Annotation[];
+}
+
+// ---------- 审阅批注 ----------
+
+/**
+ * anchored：引用片段在目标节点中唯一定位（raw.offset 有效）；
+ * review：节点已删除、片段缺失或存在多处匹配，须人工复核，候选保留在 candidates 中。
+ */
+export type AnnotationStatus = 'anchored' | 'review';
+
+/** 片段重定位候选（片段在某节点文本中多处匹配时全部保留，供人工选择） */
+export interface AnnotationCandidate {
+  /** 候选所在节点 id */
+  nodeId: string;
+  /** 候选片段起点 */
+  start: number;
+  /** 候选片段终点 */
+  end: number;
+  /** 重定位途径：exact 原文精确匹配 / context 前后文锚点匹配 / position 结构位置推断 */
+  via: 'exact' | 'context' | 'position';
+}
+
+export interface Annotation {
+  /** 稳定批注 ID */
+  id: string;
+  /** 创建时所在节点 ID；重定位后更新为候选节点（待复核时保留创建时/最后确认的节点） */
+  nodeId: string;
+  /** 批注正文 */
+  note: string;
+  /** 创建时间 */
+  createdAt: number;
+  /** 最近一次编辑批注正文的时间 */
+  updatedAt: number;
+  /** 引用片段原文 */
+  quote: string;
+  /** 创建时的片段区间（用于与 quote 共同构成稳定锚点，不随自动重定位改写） */
+  origStart: number;
+  origEnd: number;
+  /** 前文锚点（片段前若干字，用于编辑后的重定位） */
+  prefix: string;
+  /** 后文锚点（片段后若干字，用于编辑后的重定位） */
+  suffix: string;
+  /** 当前重定位状态（由 annotations 引擎依据当前文档推导后写回） */
+  status: AnnotationStatus;
+  /** anchored 时当前片段区间 */
+  offset?: { start: number; end: number };
+  /** review 时的原因说明 */
+  reason?: string;
+  /** review 时保留的候选列表 */
+  candidates?: AnnotationCandidate[];
+  /** 最近一次成功重定位的途径（界面提示“自动重定位”来源） */
+  resolvedVia?: AnnotationCandidate['via'];
+  /** 用户已在候选中人工选定位置：之后以该节点为准，不因他处另有相同片段而退回待复核 */
+  anchoredByUser?: boolean;
 }
 
 /** 持久化状态（同时用于本地文件与浏览器缓存） */
@@ -152,6 +208,8 @@ export interface PersistedState {
   confirmed: Record<string, string>;
   /** 命名版本快照；旧数据缺少该字段时按空列表加载 */
   snapshots?: DocSnapshot[];
+  /** 审阅批注；旧数据缺少该字段时按空列表加载 */
+  annotations?: Annotation[];
 }
 
 export interface ExportBundle {
@@ -161,5 +219,7 @@ export interface ExportBundle {
   confirmed: Record<string, string>;
   /** 命名版本快照随 JSON 一并导出，导入时恢复 */
   snapshots?: DocSnapshot[];
+  /** 审阅批注随 JSON 一并导出，导入时按当前文档重新定位 */
+  annotations?: Annotation[];
   exportedAt: string;
 }

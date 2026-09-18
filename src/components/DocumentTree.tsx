@@ -1,16 +1,46 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { useApp } from '../lib/context';
 import { useHighlighter } from '../lib/highlighter';
-import type { ClauseNode, RefOccurrence } from '../../shared/model';
-import { NodeEditor } from './NodeEditor';
+import type { Annotation, ClauseNode, RefOccurrence } from '../../shared/model';
+import { NodeEditor, type AnnMark } from './NodeEditor';
 import { formatOrdinal } from '../lib/numeral';
 import { countNodes } from '../lib/parser';
+
+/** 由批注列表派生各节点的正文装饰：已定位批注 + 待复核批注的候选位置 */
+function buildAnnMarks(annotations: Annotation[]): Record<string, AnnMark[]> {
+  const map: Record<string, AnnMark[]> = {};
+  const add = (nodeId: string, mark: AnnMark) => {
+    (map[nodeId] ??= []).push(mark);
+  };
+  for (const ann of annotations) {
+    if (ann.status === 'anchored' && ann.offset) {
+      add(ann.nodeId, {
+        annotationId: ann.id,
+        start: ann.offset.start,
+        end: ann.offset.end,
+        kind: 'anchor',
+      });
+    } else if (ann.candidates) {
+      for (const c of ann.candidates) {
+        add(c.nodeId, {
+          annotationId: ann.id,
+          start: c.start,
+          end: c.end,
+          kind: 'candidate',
+        });
+      }
+    }
+  }
+  for (const list of Object.values(map)) list.sort((a, b) => a.start - b.start);
+  return map;
+}
 
 export function DocumentTree() {
   const { store } = useApp();
   const [, force] = useState(0);
   useEffect(() => store.subscribe(() => force((n) => n + 1)), [store]);
-  const { doc, analysis } = store.getSnapshot();
+  const { doc, analysis, annotations } = store.getSnapshot();
+  const annMarksMap = useMemo(() => buildAnnMarks(annotations), [annotations]);
   const counts = countNodes(doc);
   const [collapsed, setCollapsed] = useState<Record<string, boolean>>({});
 
@@ -27,7 +57,8 @@ export function DocumentTree() {
           aria-label="文档标题"
         />
         <div className="doc-meta">
-          {counts.articles} 条 · {counts.paragraphs} 款 · {counts.items} 项
+          {counts.articles} 条 · {counts.paragraphs} 款 · {counts.items} 项 ·{' '}
+          {annotations.length} 批注
           <button className="link-btn" onClick={() => store.addArticle()}>
             + 新增条
           </button>
@@ -55,6 +86,7 @@ export function DocumentTree() {
             collapsed={Boolean(collapsed[article.id])}
             onToggle={() => toggle(article.id)}
             occurrences={analysis.byNode[article.id] ?? []}
+            annMarksMap={annMarksMap}
           />
         ))}
         {doc.root.length === 0 && (
@@ -73,12 +105,14 @@ function ArticleView({
   collapsed,
   onToggle,
   occurrences,
+  annMarksMap,
 }: {
   article: ClauseNode;
   index: number;
   collapsed: boolean;
   onToggle: () => void;
   occurrences: RefOccurrence[];
+  annMarksMap: Record<string, AnnMark[]>;
 }) {
   const { store, highlighter } = useApp();
   const hl = useHighlighter(highlighter);
@@ -193,16 +227,27 @@ function ArticleView({
       {!collapsed && (
         <div className="node-body">
           {article.text && (
-            <NodeEditor node={article} occurrences={occurrences} isHead />
+            <NodeEditor
+              node={article}
+              occurrences={occurrences}
+              annMarks={annMarksMap[article.id] ?? []}
+              isHead
+            />
           )}
-          <ParagraphList article={article} />
+          <ParagraphList article={article} annMarksMap={annMarksMap} />
         </div>
       )}
     </div>
   );
 }
 
-function ParagraphList({ article }: { article: ClauseNode }) {
+function ParagraphList({
+  article,
+  annMarksMap,
+}: {
+  article: ClauseNode;
+  annMarksMap: Record<string, AnnMark[]>;
+}) {
   const { store, highlighter } = useApp();
   const analysis = store.getSnapshot().analysis;
   const hl = useHighlighter(highlighter);
@@ -234,7 +279,11 @@ function ParagraphList({ article }: { article: ClauseNode }) {
               </button>
             </div>
           </div>
-          <NodeEditor node={paragraph} occurrences={analysis.byNode[paragraph.id] ?? []} />
+          <NodeEditor
+            node={paragraph}
+            occurrences={analysis.byNode[paragraph.id] ?? []}
+            annMarks={annMarksMap[paragraph.id] ?? []}
+          />
           {paragraph.children.length > 0 && (
             <div className="item-list">
               {paragraph.children.map((item, ii) => (
@@ -256,6 +305,7 @@ function ParagraphList({ article }: { article: ClauseNode }) {
                   <NodeEditor
                     node={item}
                     occurrences={analysis.byNode[item.id] ?? []}
+                    annMarks={annMarksMap[item.id] ?? []}
                   />
                 </div>
               ))}

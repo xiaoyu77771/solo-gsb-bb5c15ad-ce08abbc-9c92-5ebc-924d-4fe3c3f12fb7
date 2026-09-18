@@ -6,6 +6,12 @@ import { parseOrdinal, formatChinese } from '../src/lib/numeral';
 import { diffDocuments, diffText, MAX_LCS_CHARS } from '../src/lib/diff';
 import { createSnapshot, sanitizeSnapshots } from '../src/lib/snapshot';
 import { cloneTree, renumberAll } from '../src/lib/tree';
+import {
+  createAnnotation,
+  relocateAnnotations,
+  resolveAnnotation,
+  sanitizeAnnotations,
+} from '../src/lib/annotations';
 import { assert } from 'node:console';
 
 let pass = 0;
@@ -308,6 +314,121 @@ check('同序号歧义', ambA.issues.some((i) => i.type === 'ambiguous'), JSON.s
   const long = '字'.repeat(MAX_LCS_CHARS + 10);
   const segsLong = diffText(long, long + '尾');
   check('超长文本退化为整段差异', segsLong.some((s) => s.type === 'add'));
+}
+
+// ---- 审阅批注：创建锚点、编辑后重定位、缺失/多匹配待复核、候选保留与采纳 ----
+{
+  const quote = '一段被批注的文字片段';
+
+  // 基础文档：片段仅存在于第一条（全局唯一）
+  const single = parseDocument(`单处法
+
+第一条【一】
+为了测试，引用第三条，并且这里是一段被批注的文字片段，随后还有其它内容。
+
+第二条【二】
+本款没有该片段。
+
+第三条【三】
+本款为第三条的正文内容。`).doc;
+  renumberAll(single.root);
+  check('批注测试文档解析为 3 条', single.root.length === 3, String(single.root.length));
+  const firstNode = single.root[0].children[0];
+  const firstText = firstNode.text;
+  const qStart = firstText.indexOf(quote);
+  const qEnd = qStart + quote.length;
+  check('批注测试前置：片段唯一存在于第一条', qStart >= 0);
+
+  const ann = createAnnotation(firstNode.id, firstText, qStart, qEnd, '请斟酌措辞');
+  check('批注创建：引用片段', ann.quote === quote);
+  check('批注创建：状态 anchored', ann.status === 'anchored' && ann.offset?.start === qStart);
+  check('批注创建：前文锚点非空', ann.prefix.includes('引用第三条'));
+  check('批注创建：后文锚点非空', ann.suffix.includes('随后还有'));
+  check('批注创建：稳定 ID', ann.id.startsWith('ann_'));
+
+  // 未编辑时重定位：全局唯一，保持 anchored
+  const r0 = relocateAnnotations([ann], single);
+  check('未变更：批注保持 anchored', r0[0].status === 'anchored' && r0[0].offset!.start === qStart);
+
+  // 在片段之前插入文字：唯一精确匹配，自动跟随偏移
+  const dIns = JSON.parse(JSON.stringify(single)) as typeof single;
+  dIns.root[0].children[0].text = '【新增前缀】' + firstText;
+  const r1 = relocateAnnotations([ann], dIns);
+  check('前文插入：唯一精确匹配并跟随偏移', r1[0].status === 'anchored' && r1[0].offset!.start === qStart + 6, JSON.stringify(r1[0].offset));
+
+  // 片段整体被替换为不同文字（锚点仍在）：应待复核而非误锚到新文字
+  const dRepl = JSON.parse(JSON.stringify(single)) as typeof single;
+  dRepl.root[0].children[0].text = firstText
+    .slice(0, qStart)
+    + '这是另一句毫不相干的全新表述内容呀'
+    + firstText.slice(qEnd);
+  const r2 = relocateAnnotations([ann], dRepl);
+  check('片段被替换：标为待复核', r2[0].status === 'review', r2[0].status);
+  check('片段被替换：给出缺失原因', !!r2[0].reason && r2[0].reason!.includes('不存在'), r2[0].reason ?? '');
+
+  // 第二条改写为含相同片段、第一条删除片段：全局唯一匹配移到第二条 → 跨节点自动重定位
+  const dMove = JSON.parse(JSON.stringify(single)) as typeof single;
+  dMove.root[0].children[0].text = firstText.slice(0, qStart) + firstText.slice(qEnd);
+  dMove.root[1].children[0].text = `本款同样包含${quote}，作为结尾。`;
+  const secondNode = dMove.root[1].children[0];
+  const r3 = relocateAnnotations([ann], dMove);
+  check('跨节点唯一匹配：自动重定位到第二条', r3[0].status === 'anchored' && r3[0].nodeId === secondNode.id, r3[0].status);
+
+  // 在唯一基线之外，第二条新增相同片段：全局两处匹配 → 待复核并保留 2 个候选
+  const dDup = JSON.parse(JSON.stringify(single)) as typeof single;
+  dDup.root[1].children[0].text = `本款同样包含${quote}，作为结尾。`;
+  const r4 = relocateAnnotations([ann], dDup);
+  check('多处匹配：待复核并保留候选', r4[0].status === 'review' && (r4[0].candidates?.length ?? 0) === 2,
+    JSON.stringify({ status: r4[0].status, n: r4[0].candidates?.length }));
+
+  // 采纳候选：锚定到第二条候选，并重写锚点
+  const candidate = r4[0].candidates!.find((c) => c.nodeId === dDup.root[1].children[0].id)!;
+  check('多处匹配：候选含第二条', !!candidate);
+  const r5 = resolveAnnotation(r4, ann.id, candidate, dDup);
+  check('采纳候选：状态恢复 anchored', r5[0].status === 'anchored');
+  check('采纳候选：节点与区间更新', r5[0].nodeId === candidate.nodeId && r5[0].offset!.start === candidate.start);
+  check('采纳候选：锚点已重写', r5[0].suffix.includes('作为结尾'));
+  check('采纳候选：原始区间 origStart 保留不变', r5[0].origStart === qStart);
+
+  // 人工选定后再次重定位（重复片段仍在）：不退回待复核，稳定锚定在用户选定节点
+  const r5b = relocateAnnotations(r5, dDup);
+  check('人工选定后重复仍在：保持 anchored 于所选节点',
+    r5b[0].status === 'anchored' && r5b[0].nodeId === candidate.nodeId && r5b[0].anchoredByUser === true,
+    JSON.stringify({ status: r5b[0].status, nodeId: r5b[0].nodeId }));
+  // 所选节点内片段被改写：仅在该节点跟踪，不会因第一条仍有相同片段而跳走
+  const dPin = JSON.parse(JSON.stringify(dDup)) as typeof dDup;
+  dPin.root[1].children[0].text = '本款改成没有该片段的内容。';
+  const r5c = relocateAnnotations(r5, dPin);
+  check('人工选定节点片段消失：待复核（不跳向他处）', r5c[0].status === 'review');
+
+  // 两处片段都被删除：待复核（无候选），批注不被删除
+  const dDel = JSON.parse(JSON.stringify(dDup)) as typeof dDup;
+  dDel.root[1].children[0].text = '本款改成别的内容。';
+  dDel.root[0].children[0].text = firstText.slice(0, qStart) + firstText.slice(qEnd);
+  const r6 = relocateAnnotations([ann], dDel);
+  check('片段皆失：待复核且批注保留', r6[0].status === 'review' && r6[0].id === ann.id);
+
+  // 结构调整：移动条不改写节点 id，片段仍在原节点（全局唯一），保持 anchored
+  const dStruct = JSON.parse(JSON.stringify(single)) as typeof single;
+  const firstArt = dStruct.root.shift()!;
+  dStruct.root.push(firstArt);
+  renumberAll(dStruct.root);
+  const r7 = relocateAnnotations([ann], dStruct);
+  check('结构重排：按稳定节点 ID 仍定位', r7[0].status === 'anchored' && r7[0].nodeId === ann.nodeId);
+
+  // 规整：旧数据缺省 / 非法项过滤 / 合法项保留
+  check('批注旧数据缺省 → 空列表', sanitizeAnnotations(undefined).length === 0);
+  check('批注非法项被过滤', sanitizeAnnotations([null, 42, { nodeId: 'x' }, { quote: 'q' }]).length === 0);
+  const san = sanitizeAnnotations([
+    { id: 'a1', nodeId: 'n1', quote: '片段', origStart: 0, origEnd: 2, note: 'n', prefix: '', suffix: '' },
+  ]);
+  check('批注合法项保留', san.length === 1 && san[0].id === 'a1' && san[0].status === 'review');
+
+  // 命名快照须保留批注数据
+  const snap = createSnapshot(single, {}, '一审稿', [ann]);
+  check('快照保留批注', Array.isArray(snap.annotations) && snap.annotations!.length === 1);
+  check('快照批注与正文脱离引用', snap.annotations![0] !== ann);
+  void assert;
 }
 
 console.log(`\n通过 ${pass} 项，失败 ${fail} 项`);
